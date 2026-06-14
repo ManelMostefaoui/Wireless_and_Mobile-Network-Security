@@ -1,0 +1,87 @@
+import struct
+import binascii
+
+IV         = bytes([0xAB, 0xCD, 0xEF])
+SECRET_KEY = bytes([0x13, 0x27, 0x45, 0x67, 0x89])
+plaintext  = b'10101010'
+
+icv_int       = binascii.crc32(plaintext) & 0xFFFFFFFF
+icv_bytes     = struct.pack('<I', icv_int)     
+plaintext_icv = plaintext + icv_bytes
+rc4_seed      = IV + SECRET_KEY
+
+print("=" * 55)
+print("         WEP ENCRYPTION — STEP BY STEP")
+print("=" * 55)
+print(f"\nPlaintext:      {plaintext.decode()}")
+print(f"Plaintext (hex): {plaintext.hex().upper()}")
+print(f"IV:             {IV.hex().upper()}")
+print(f"Secret Key:     {SECRET_KEY.hex().upper()}")
+
+print("\n--- Step 1: Pre-Processing ---")
+print(f"CRC-32 (ICV):   0x{icv_int:08X}")
+print(f"ICV (LE bytes): {icv_bytes.hex().upper()}")
+print(f"Plaintext+ICV:  {plaintext_icv.hex().upper()}")
+print(f"RC4 Seed:       {rc4_seed.hex().upper()}")
+
+def KSA(key):
+    S, j = list(range(256)), 0
+    for i in range(256):
+        j = (j + S[i] + key[i % len(key)]) % 256
+        S[i], S[j] = S[j], S[i]
+    return S
+
+
+def PRGA(S, length):
+    S, i, j, ks = S[:], 0, 0, []
+    for _ in range(length):
+        i = (i + 1) % 256
+        j = (j + S[i]) % 256
+        S[i], S[j] = S[j], S[i]
+        ks.append(S[(S[i] + S[j]) % 256])
+    return bytes(ks)
+
+S         = KSA(rc4_seed)
+keystream = PRGA(S, len(plaintext_icv))
+
+print("\n--- Step 2: RC4 (KSA + PRGA) ---")
+print(f"S-box (first 16): {S[:16]}")
+print(f"Keystream:        {keystream.hex().upper()}")
+
+ciphertext = bytes(a ^ b for a, b in zip(plaintext_icv, keystream))
+wep_frame  = IV + ciphertext
+
+print("\n--- Step 3: XOR Encryption ---")
+print(f"{'Byte':<6} {'PT+ICV':>10} {'Keystream':>10} {'Ciphertext':>10}")
+print("-" * 40)
+for i, (p, k, c) in enumerate(zip(plaintext_icv, keystream, ciphertext), 1):
+    print(f"{i:<6} 0x{p:02X}{'':<6} 0x{k:02X}{'':<6} 0x{c:02X}")
+
+print(f"\nCiphertext:  {ciphertext.hex().upper()}")
+print(f"WEP Frame:   {wep_frame.hex().upper()}")
+
+recv_IV         = wep_frame[:3]
+recv_ciphertext = wep_frame[3:]
+recv_seed       = recv_IV + SECRET_KEY
+S2              = KSA(recv_seed)
+recv_keystream  = PRGA(S2, len(recv_ciphertext))
+decrypted       = bytes(a ^ b for a, b in zip(recv_ciphertext, recv_keystream))
+recv_plaintext  = decrypted[:-4]
+recv_icv        = decrypted[-4:]
+computed_icv    = struct.pack('<I', binascii.crc32(recv_plaintext) & 0xFFFFFFFF)
+
+print("\n Verification: Decryption ")
+print(f"Recovered plaintext: {recv_plaintext.decode()}")
+print(f"Received ICV:        {recv_icv.hex().upper()}")
+print(f"Computed ICV:        {computed_icv.hex().upper()}")
+print(f"ICV Match:           {'PASS ✓' if recv_icv == computed_icv else 'FAIL ✗'}")
+
+print("\n" + "=" * 55)
+print("                    SUMMARY")
+print("=" * 55)
+print(f"  Plaintext:   {plaintext.decode()}")
+print(f"  ICV:         {icv_bytes.hex().upper()}")
+print(f"  Keystream:   {keystream.hex().upper()}")
+print(f"  Ciphertext:  {ciphertext.hex().upper()}")
+print(f"  WEP Frame:   {wep_frame.hex().upper()}")
+print(f"  Decryption:  {'SUCCESS' if recv_icv == computed_icv else 'FAILED'}")
